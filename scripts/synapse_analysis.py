@@ -1,6 +1,8 @@
 """
 This script compares a set of synapse lines to another (ground truth) set.
 """
+import csv
+import io
 import json
 import readline
 import sys
@@ -11,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, cast
 import nglui
 import numpy as np
 from caveclient import CAVEclient
+from cloudfiles import CloudFile
 from google.cloud import storage
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
@@ -21,6 +24,7 @@ from zetta_utils.layer.volumetric import VolumetricIndex
 from zetta_utils.layer.volumetric.cloudvol import build_cv_layer
 
 client: Optional[CAVEclient] = None
+source_path = ""
 
 
 def verify_cave_auth():
@@ -164,7 +168,21 @@ def get_resolution(ng_layer_data) -> Vec3D:
     return result
 
 
-source_path = ""
+def read_csv(source_path):
+    cf = CloudFile(source_path)
+    data = cf.get()
+    lines: list[dict] = []
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8")))
+    for row in reader:
+        lines.append(
+            {
+                "id": str(len(lines) + 1),
+                "type": "line",
+                "pointA": [int(row["presyn_x"]), int(row["presyn_y"]), int(row["presyn_z"])],
+                "pointB": [int(row["postsyn_x"]), int(row["postsyn_y"]), int(row["postsyn_z"])],
+            }
+        )
+    return lines
 
 
 def load_annotations(forPurpose: str, default_box: Optional[dict] = None):
@@ -178,6 +196,10 @@ def load_annotations(forPurpose: str, default_box: Optional[dict] = None):
     if inp:
         source_path = inp
     if source_path.startswith("gs:"):
+        if source_path.endswith(".df") or source_path.endswith(".csv"):
+            annotations = read_csv(source_path)
+            resolution = input_vec3Di("Resolution")
+            return annotations, resolution, None
         layer = build_annotation_layer(source_path, mode="read")
         resolution = layer.index.resolution
     else:
@@ -263,7 +285,7 @@ def load_segmentation(default_box):
     if inp:
         source_path = inp
     if source_path.startswith("gs:"):
-        resolution = input_vec3Di("Resolution: ")
+        resolution = input_vec3Di("Resolution")
     else:
         verify_cave_auth()
         state_id = source_path.split("/")[-1]  # in case full URL was given
@@ -476,6 +498,12 @@ if __name__ == "__main__":  # def main():
     point_segs: Dict[Vec3D, str] = {}
     lookup_seg_ids(gt_points, seg_data, idx, point_segs)
     lookup_seg_ids(pr_points, seg_data, idx, point_segs)
+    if not gt_points:
+        print("No GT points within bounding box (resolution error?)")
+        sys.exit()
+    if not pr_points:
+        print("No prediction points within bounding box (resolution error?)")
+        sys.exit()
 
     stats = analyze_points(gt_points, pr_points, lambda a, b: point_segs[a] == point_segs[b])
     print_stats(stats, "PRESYNAPTIC SITES")
@@ -487,6 +515,12 @@ if __name__ == "__main__":  # def main():
     point_segs = {}
     lookup_seg_ids(gt_points, seg_data, idx, point_segs)
     lookup_seg_ids(pr_points, seg_data, idx, point_segs)
+    if not gt_points:
+        print("No GT points within bounding box (resolution error?)")
+        sys.exit()
+    if not pr_points:
+        print("No prediction points within bounding box (resolution error?)")
+        sys.exit()
 
     stats = analyze_points(gt_points, pr_points, lambda a, b: point_segs[a] == point_segs[b])
     print_stats(stats, "POSTSYNAPTIC SITES")
@@ -512,18 +546,24 @@ if __name__ == "__main__":  # def main():
         )
         point_segs[item["center"] * pred_resolution] = ids
     gt_points = get_points(gt_items, "center", gt_resolution)
+    if not gt_points:
+        print("No GT points within bounding box (resolution error?)")
+        sys.exit()
     pr_points = get_points(pred_items, "center", pred_resolution)
+    if not pr_points:
+        print("No prediction points within bounding box (resolution error?)")
+        sys.exit()
     stats = analyze_points(gt_points, pr_points, lambda a, b: point_segs[a] == point_segs[b])
     print_stats(stats, "SYNAPSES")
 
-    print("\n\nTP:")
-    print_as_annotations(stats["tp_points_B"], pred_items, "center", pred_resolution)
+    # print("\n\nTP:")
+    # print_as_annotations(stats["tp_points_B"], pred_items, "center", pred_resolution)
 
-    print("\n\nFP:")
-    print_as_annotations(stats["fp_points_B"], pred_items, "center", pred_resolution)
+    # print("\n\nFP:")
+    # print_as_annotations(stats["fp_points_B"], pred_items, "center", pred_resolution)
 
-    print("\n\nFN:")
-    print_as_annotations(stats["fn_points_A"], gt_items, "center", gt_resolution)
+    # print("\n\nFN:")
+    # print_as_annotations(stats["fn_points_A"], gt_items, "center", gt_resolution)
 
 # if __name__ == "__main__":
 #     main()
